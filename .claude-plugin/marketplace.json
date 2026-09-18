@@ -19,6 +19,14 @@
       "skills": [
         "./skills/web-cloudflare"
       ]
+    },
+    {
+      "name": "expo-supabase",
+      "source": "./",
+      "description": "Expo app on Supabase: RLS, auth, repositories, offline cache, shared edge-function toolkit, EAS updates",
+      "skills": [
+        "./skills/expo-supabase"
+      ]
     }
   ]
 }
