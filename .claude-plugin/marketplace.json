@@ -1,0 +1,12 @@
+{
+  "name": "mxvsh-skills",
+  "owner": { "name": "mxvsh" },
+  "plugins": [
+    {
+      "name": "app-builders",
+      "source": "./",
+      "description": "Skills for building Expo apps and web dashboards",
+      "skills": ["./skills/expo-cloudflare"]
+    }
+  ]
+}
