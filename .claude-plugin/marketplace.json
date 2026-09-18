@@ -1,12 +1,24 @@
 {
   "name": "mxvsh-skills",
-  "owner": { "name": "mxvsh" },
+  "owner": {
+    "name": "mxvsh"
+  },
   "plugins": [
     {
-      "name": "app-builders",
+      "name": "expo-cloudflare",
       "source": "./",
-      "description": "Skills for building Expo apps and web dashboards",
-      "skills": ["./skills/expo-cloudflare"]
+      "description": "Expo app + Hono API on Cloudflare Workers, D1 + Drizzle, better-auth, EAS updates",
+      "skills": [
+        "./skills/expo-cloudflare"
+      ]
+    },
+    {
+      "name": "web-cloudflare",
+      "source": "./",
+      "description": "TanStack Start + coss ui dashboard, Hono API on Cloudflare Workers, D1 + Drizzle, better-auth",
+      "skills": [
+        "./skills/web-cloudflare"
+      ]
     }
   ]
 }
