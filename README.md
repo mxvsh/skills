@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.webp" alt="Skills" width="100%">
+</p>
+
 # Skills
 
 Reusable agent skills for Claude Code, Cursor, Codex, and other agents that support [Agent Skills](https://agentskills.io).
