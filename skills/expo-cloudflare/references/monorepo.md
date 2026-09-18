@@ -5,14 +5,12 @@
 ```
 repo/
 ├─ apps/
-│  ├─ web/                    TanStack Start + Hono → Cloudflare Worker (see web.md)
+│  ├─ api/                    Hono → Cloudflare Worker (see backend.md)
 │  └─ mobile/                 Expo app (see mobile.md)
 ├─ packages/
-│  ├─ api/                    Hono app (see backend.md)
 │  ├─ db/                     Drizzle schema, migrations, test db
-│  ├─ auth/                   better-auth server + clients
+│  ├─ auth/                   better-auth server config
 │  ├─ core/                   Zod schemas, DTO types, ids, constants
-│  ├─ ui/                     web components + Storybook (optional)
 │  ├─ tokens/                 design tokens
 │  └─ config/                 tsconfig bases
 ├─ docs/
@@ -39,7 +37,7 @@ Each app may also carry its own `AGENTS.md` for rules that only apply there.
 	"workspaces": ["apps/*", "packages/*"],
 	"scripts": {
 		"dev": "turbo dev",
-		"dev:web": "turbo dev --filter=@app/web",
+		"dev:api": "turbo dev --filter=@app/api",
 		"dev:mobile": "turbo dev --filter=@app/mobile",
 		"build": "turbo build",
 		"check-types": "turbo check-types",
@@ -48,10 +46,10 @@ Each app may also carry its own `AGENTS.md` for rules that only apply there.
 		"test": "turbo test",
 		"tokens:build": "turbo build --filter=@app/tokens",
 		"db:generate": "bun --filter=@app/db generate",
-		"db:migrate:local": "bun --filter=@app/web db:migrate:local",
-		"db:migrate:remote": "bun --filter=@app/web db:migrate:remote",
-		"types:worker": "bun --filter=@app/web types",
-		"deploy": "bun --filter=@app/web deploy"
+		"db:migrate:local": "bun --filter=@app/api db:migrate:local",
+		"db:migrate:remote": "bun --filter=@app/api db:migrate:remote",
+		"types:worker": "bun --filter=@app/api types",
+		"deploy": "bun --filter=@app/api deploy"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "latest",
@@ -66,7 +64,7 @@ Root scripts are thin wrappers. The real commands live in each package.
 
 ## Internal packages
 
-Every internal package is `private`, `type: module`, and exports TypeScript source. Vite, Metro
+Every internal package is `private`, `type: module`, and exports TypeScript source. Wrangler, Metro
 and tsc all read `.ts` directly, so there is nothing to build or watch.
 
 ```json
@@ -101,12 +99,11 @@ and tsc all read `.ts` directly, so there is nothing to build or watch.
 		"build": {
 			"dependsOn": ["^build"],
 			"inputs": ["$TURBO_DEFAULT$", ".env*"],
-			"outputs": ["dist/**", "storybook-static/**", "tokens.css"]
+			"outputs": ["dist/**"]
 		},
 		"check-types": { "dependsOn": ["^build"] },
 		"test": { "dependsOn": ["^build"] },
-		"dev": { "cache": false, "persistent": true },
-		"storybook": { "cache": false, "persistent": true }
+		"dev": { "cache": false, "persistent": true }
 	}
 }
 ```
@@ -140,12 +137,10 @@ and tsc all read `.ts` directly, so there is nothing to build or watch.
 }
 ```
 
-- `tsconfig.react.json` extends base and adds `"jsx": "react-jsx"`.
 - `tsconfig.bun.json` extends base and adds `"types": ["bun"]`.
-- Server packages extend `bun`, web packages extend `react`, and the Expo app extends
-  `expo/tsconfig.base` with `strict` and `noUncheckedIndexedAccess` turned on.
-- App-local alias `#/*` → `./src/*`: via `"imports": { "#/*": "./src/*" }` in web's
-  `package.json` and `paths` in both tsconfigs.
+- Server packages and `apps/api` extend `bun`. The Expo app extends `expo/tsconfig.base` with
+  `strict` and `noUncheckedIndexedAccess` turned on.
+- App-local alias `#/*` → `./src/*` via `paths` in the Expo tsconfig.
 
 Conventions: `interface` for object shapes, `type` for unions. No `any`.
 
@@ -160,13 +155,10 @@ Conventions: `interface` for object shapes, `type` for unions. No `any`.
 			"**",
 			"!**/node_modules",
 			"!**/dist",
-			"!**/.tanstack",
 			"!**/.wrangler",
 			"!**/.expo",
-			"!**/storybook-static",
-			"!**/routeTree.gen.ts",
 			"!**/packages/db/migrations",
-			"!**/tokens.css"
+			"!**/global.css"
 		]
 	},
 	"formatter": { "enabled": true, "indentStyle": "tab", "lineWidth": 100 },
@@ -184,48 +176,43 @@ Conventions: `interface` for object shapes, `type` for unions. No `any`.
 
 ## Design tokens (packages/tokens)
 
-One TypeScript source compiled into two generated CSS files, plus a plain object for React Native
+One TypeScript source compiled into the app's generated `global.css`, plus a plain object for React Native
 code that needs raw values (e.g. `contentStyle` on a navigator).
 
 ```
 packages/tokens/
 ├─ src/colors.ts, type.ts, shape.ts, motion.ts
-├─ src/css.ts          tokensCss() for web, mobileCss() for uniwind
+├─ src/css.ts          mobileCss() for uniwind
 ├─ src/native.ts       export const theme = { colors, radius, type, … }
-├─ scripts/build-css.ts
-└─ tokens.css          GENERATED
+└─ scripts/build-css.ts
 ```
 
 ```ts
 // scripts/build-css.ts
-import { mobileCss, tokensCss } from "../src/css"
+import { mobileCss } from "../src/css"
 
-await Bun.write(new URL("../tokens.css", import.meta.url), tokensCss())
 // uniwind resolves `@import 'tailwindcss'` from the app's node_modules, so this lands in the app.
 await Bun.write(new URL("../../../apps/mobile/src/global.css", import.meta.url), mobileCss())
 ```
 
-Package exports: `"."`, `"./native"`, `"./tokens.css"`. Both CSS outputs start with
-`/* Generated by @app/tokens. Do not edit; run bun tokens:build. */` and are gitignored.
+Package exports: `"."`, `"./native"`. The CSS output starts with
+`/* Generated by @app/tokens. Do not edit; run bun tokens:build. */` and is gitignored.
 
 ## .gitignore essentials
 
 ```
 node_modules
 dist
-.tanstack
 .wrangler
 .expo
 .turbo
-storybook-static
 .env
 .env.*
 !.env.example
 .dev.vars
 *.tsbuildinfo
 packages/db/seed.sql
-packages/tokens/tokens.css
-apps/web/worker-configuration.d.ts
+apps/api/worker-configuration.d.ts
 apps/mobile/src/global.css
 apps/mobile/src/uniwind-types.d.ts
 apps/mobile/ios
@@ -239,8 +226,8 @@ apps/mobile/android
 ## Scaffolding order
 
 1. Root: `package.json`, `turbo.json`, `biome.json`, `.gitignore`, `packages/config`.
-2. `packages/core` → `packages/db` → `packages/auth` → `packages/api`.
-3. `apps/web`: TanStack Start + `@cloudflare/vite-plugin`, mount `/api`. Run `wrangler d1 create`, then generate and apply the first migration.
-4. `packages/tokens`, then `packages/ui`.
+2. `packages/core` → `packages/db` → `packages/auth`.
+3. `apps/api`: Hono + `worker.ts` + `wrangler.toml`. Run `wrangler d1 create`, then generate and apply the first migration.
+4. `packages/tokens`.
 5. `apps/mobile`: `bunx create-expo-app@latest`, move into `apps/`, wire Metro, uniwind, the API client, auth, and EAS.
 6. `AGENTS.md`, `CLAUDE.md`, `docs/architecture.md`, `docs/decisions.md`.

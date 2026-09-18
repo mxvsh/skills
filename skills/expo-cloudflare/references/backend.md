@@ -1,24 +1,46 @@
 # Backend: Hono on Cloudflare Workers, D1 + Drizzle, better-auth
 
-The API is a Hono app in `packages/api`. `apps/web` mounts it at `/api/*` inside the TanStack
-Start worker, so there is one deployable. Keeping it in a package lets mobile import `AppType`
-without importing the web app.
+The API is a Hono app in `apps/api`, deployed as its own Cloudflare Worker. Its package
+(`@app/api`) exports `createApp` and `AppType`; the Expo app imports only the type.
 
-## packages/api layout
+## apps/api layout
 
 ```
-packages/api/src/
-├─ app.ts                createApp(): basePath, error handler, auth mount, middleware, routers
-├─ env.ts                Bindings interface + assertBindings()
-├─ errors.ts             errorCodes list, apiError(), unauthorized(), forbidden(), notFound(), invalid()
-├─ middleware/
-│  ├─ session.ts         better-auth session → c.var.db, c.var.user
-│  └─ require.ts         requireUser(c), requireRole(c, "admin")
-├─ routes/<resource>.ts  one Hono router per resource
-├─ services/<resource>.service.ts (+ .test.ts)
-├─ lib/                  small helpers (hashing, etc.)
-└─ index.ts              export * from app, env, errors; export type AppEnv
+apps/api/
+├─ src/
+│  ├─ worker.ts             Worker entry: export default { fetch }
+│  ├─ app.ts                createApp(): basePath, error handler, auth mount, middleware, routers
+│  ├─ env.ts                Bindings interface + assertBindings()
+│  ├─ errors.ts             errorCodes list, apiError(), unauthorized(), forbidden(), notFound(), invalid()
+│  ├─ middleware/
+│  │  ├─ session.ts         better-auth session → c.var.db, c.var.user
+│  │  └─ require.ts         requireUser(c), requireRole(c, "admin")
+│  ├─ routes/<resource>.ts  one Hono router per resource
+│  ├─ services/<resource>.service.ts (+ .test.ts)
+│  ├─ lib/                  small helpers (hashing, etc.)
+│  └─ index.ts              export * from app, env, errors; export type AppEnv
+├─ wrangler.toml
+├─ .dev.vars.example
+├─ package.json            "exports": { ".": "./src/index.ts" }
+└─ tsconfig.json           extends @app/config/tsconfig.bun.json, includes worker-configuration.d.ts
 ```
+
+## worker.ts
+
+```ts
+import { createApp } from "./app"
+import { assertBindings, type Bindings } from "./env"
+
+const app = createApp()
+
+export default {
+	fetch(request, env, ctx) {
+		return app.fetch(request, assertBindings(env), ctx)
+	},
+} satisfies ExportedHandler<Partial<Bindings>>
+```
+
+Durable Object classes, `scheduled` (cron) and `queue` handlers are exported from here too.
 
 ## app.ts
 
@@ -75,7 +97,7 @@ export interface Bindings extends AuthEnv {
 export function assertBindings(env: Partial<Bindings> | undefined): Bindings {
 	const missing = (["DB", "APP_URL", "BETTER_AUTH_SECRET"] as const).filter((k) => !env?.[k])
 	if (!env || missing.length > 0) {
-		throw new Error(`Missing bindings: ${missing.join(", ")}. Copy apps/web/.dev.vars.example to .dev.vars.`)
+		throw new Error(`Missing bindings: ${missing.join(", ")}. Copy apps/api/.dev.vars.example to .dev.vars.`)
 	}
 	return env as Bindings
 }
@@ -275,13 +297,12 @@ secrets never appear in the returned view.
 
 ```
 packages/auth/src/
-├─ env.ts       AuthEnv: BETTER_AUTH_SECRET, APP_URL, provider keys
+├─ env.ts       AuthEnv: BETTER_AUTH_SECRET, APP_URL (the API's public URL), provider keys
 ├─ server.ts    createAuth(db, env)
-├─ client.ts    web client (better-auth/react)
 └─ index.ts
 ```
 
-Exports: `"."` (server), `"./client"` (web).
+The client lives in the Expo app (see mobile.md), not here, so the app never imports this package.
 
 ```ts
 // server.ts
@@ -318,25 +339,20 @@ Regenerating the auth tables: point a temporary config at `createAuth({} as neve
 
 Check the better-auth docs for the current Expo plugin API before wiring it. It moves between releases.
 
-## Cloudflare config (apps/web)
+## Cloudflare config (apps/api)
 
-`wrangler.toml` is the single config: `@cloudflare/vite-plugin` reads it for `vite dev`,
-`vite build` and `wrangler deploy`, so dev runs the same workerd with the same bindings.
+`wrangler.toml` is the single config for `wrangler dev` and `wrangler deploy`.
 
 ```toml
 #:schema node_modules/wrangler/config-schema.json
-name = "app"
-main = "@tanstack/react-start/server-entry"
+name = "app-api"
+main = "src/worker.ts"
 compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 
-[assets]
-directory = "./dist/client"
-not_found_handling = "none"
-
 # Non-secret config. .dev.vars overrides locally.
 [vars]
-APP_URL = "https://example.com"
+APP_URL = "https://api.example.com"
 
 [[d1_databases]]
 binding = "DB"
@@ -345,33 +361,28 @@ database_id = "<from `wrangler d1 create app-db`>"
 migrations_dir = "../../packages/db/migrations"
 ```
 
-apps/web scripts:
+apps/api scripts:
 
 ```json
-"db:migrate:local": "wrangler d1 migrations apply app-db --local --config wrangler.toml",
-"db:migrate:remote": "wrangler d1 migrations apply app-db --remote --config wrangler.toml",
-"db:seed:local": "wrangler d1 execute app-db --local --config wrangler.toml --file=../../packages/db/seed.sql",
+"dev": "wrangler dev --ip 0.0.0.0 --port 8787",
+"db:migrate:local": "wrangler d1 migrations apply app-db --local",
+"db:migrate:remote": "wrangler d1 migrations apply app-db --remote",
+"db:seed:local": "wrangler d1 execute app-db --local --file=../../packages/db/seed.sql",
 "types": "wrangler types",
 "postinstall": "wrangler types",
-"deploy": "vite build && wrangler deploy"
+"check-types": "tsc --noEmit",
+"test": "bun test --pass-with-no-tests",
+"deploy": "wrangler deploy"
 ```
 
+- `--ip 0.0.0.0` lets phones and emulators on the LAN reach the dev API. The local D1 lives under `apps/api/.wrangler`.
 - `worker-configuration.d.ts` is generated by `wrangler types` and gitignored. Rerun it after editing `wrangler.toml`.
-- Secrets: `apps/web/.dev.vars` locally (commit a `.dev.vars.example` with comments on where each
+- Secrets: `apps/api/.dev.vars` locally (commit a `.dev.vars.example` with comments on where each
   value comes from). In production, run `wrangler secret put NAME`.
-- Read bindings with a `bindings()` helper built on `import { env } from "cloudflare:workers"`,
-  always inside a handler, never from the request or at module scope:
-
-```ts
-// apps/web/src/server/bindings.ts
-import { env } from "cloudflare:workers"
-import { assertBindings, type Bindings } from "@app/api"
-
-export function bindings(): Bindings {
-	return assertBindings(env as Partial<Bindings>)
-}
-```
-
+- `APP_URL` is the API's own public URL. better-auth builds OAuth callback URLs from it
+  (`<APP_URL>/api/auth/callback/google`), so register that redirect with the provider.
+- Bindings reach Hono through `app.fetch(request, env)` in `worker.ts`. Read them as `c.env`, never at module scope.
+- Custom domain: add `routes = [{ pattern = "api.example.com", custom_domain = true }]`, or use the `*.workers.dev` URL.
 - Add KV, R2 and Durable Objects as `wrangler.toml` bindings plus fields on `Bindings`. A Durable
   Object class is either exported from the worker entry or shipped as a small sibling worker
   bound by service binding.

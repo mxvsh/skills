@@ -20,7 +20,8 @@ apps/mobile/
 │  │  └─ index.ts               the only import surface
 │  ├─ shared/
 │  │  ├─ config.ts              apiUrl and other env-derived config (no imports from shared/)
-│  │  ├─ api.ts                 hc<AppType> client + unwrap
+│  │  ├─ api.ts                 hc<AppType> client
+│  │  ├─ errors.ts              ApiError + unwrap()
 │  │  ├─ auth.ts                better-auth expo client
 │  │  ├─ query-client.ts
 │  │  ├─ posthog.ts             optional
@@ -139,12 +140,12 @@ Turn on `"experiments": { "typedRoutes": true }` in `app.json`.
 import Constants from "expo-constants"
 
 /**
- * In dev this is the laptop running `bun dev:web`. A device resolves the URL itself,
+ * In dev this is the laptop running `bun dev:api`. A device resolves the URL itself,
  * so it has to be a LAN address, never localhost.
  */
 export const apiUrl = (
 	process.env.EXPO_PUBLIC_API_URL ??
-	(Constants.expoConfig?.hostUri ? `http://${Constants.expoConfig.hostUri.split(":")[0]}:3000` : "")
+	(Constants.expoConfig?.hostUri ? `http://${Constants.expoConfig.hostUri.split(":")[0]}:8787` : "")
 ).replace(/\/$/, "")
 ```
 
@@ -177,8 +178,83 @@ export function api() {
 }
 ```
 
-Use the same `unwrap()` / `ApiError` pattern as web (see web.md). It can live in `@app/core` or be
-copied, but never value-import `@app/api` into the app.
+```ts
+// shared/errors.ts
+import type { ApiErrorBody, ErrorCode } from "@app/api" // type-only
+
+export class ApiError extends Error {
+	readonly code: ErrorCode
+	readonly status: number
+	constructor(body: ApiErrorBody, status: number) {
+		super(body.message)
+		this.name = "ApiError"
+		this.code = body.code
+		this.status = status
+	}
+}
+
+interface JsonResponse<T> {
+	ok: boolean
+	status: number
+	json: () => Promise<T>
+}
+
+type SuccessBody<R> = R extends { ok: true; json: () => Promise<infer B> } ? B : never
+
+/** Every call in a feature's api/ goes through this; nothing downstream inspects a Response. */
+export async function unwrap<R extends JsonResponse<unknown>>(response: R): Promise<SuccessBody<R>> {
+	if (!response.ok) {
+		const body = (await response.json().catch(() => null)) as Partial<ApiErrorBody> | null
+		throw typeof body?.code === "string" && typeof body.message === "string"
+			? new ApiError(body as ApiErrorBody, response.status)
+			: new ApiError({ code: "invalid_request", message: "Something went wrong" }, response.status)
+	}
+	return response.json() as Promise<SuccessBody<R>>
+}
+```
+
+Feature example:
+
+```ts
+// features/posts/api/posts.api.ts
+import type { CreatePost } from "@app/core"
+import type { InferResponseType } from "hono/client"
+import { api } from "#/shared/api"
+import { unwrap } from "#/shared/errors"
+
+type PostsResponse = InferResponseType<ReturnType<typeof api>["api"]["posts"]["$get"]>
+export type Post = PostsResponse["posts"][number]
+
+export async function fetchPosts(): Promise<Post[]> {
+	return (await unwrap(await api().api.posts.$get())).posts
+}
+
+export async function createPost(input: CreatePost) {
+	return unwrap(await api().api.posts.$post({ json: input }))
+}
+```
+
+```ts
+// features/posts/data/posts.queries.ts
+import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query"
+import { createPost, fetchPosts } from "../api/posts.api"
+
+export const postsQueryKey = ["posts"] as const
+
+export function postsQueryOptions() {
+	return queryOptions({ queryKey: postsQueryKey, queryFn: fetchPosts })
+}
+
+export function useCreatePost() {
+	const queryClient = useQueryClient()
+	return useMutation({
+		mutationFn: createPost,
+		onSuccess: () => queryClient.invalidateQueries({ queryKey: postsQueryKey }),
+	})
+}
+```
+
+Derive response types from the route with `InferResponseType` rather than redeclaring them.
 
 ## Auth client
 
@@ -209,7 +285,7 @@ export const authClient = createAuthClient({
 
 ## Data
 
-- TanStack Query for server state (the same `queryOptions` pattern as web), Zustand for local/UI state.
+- TanStack Query for server state (`queryOptions` per feature, mutations invalidate by key), Zustand for local/UI state.
 - Use `focusManager` with `AppState` and `onlineManager` with `@react-native-community/netinfo` so queries refetch on foreground and reconnect.
 - Secrets and tokens go in `expo-secure-store`. Preferences go in AsyncStorage or MMKV.
 
@@ -218,8 +294,8 @@ export const authClient = createAuthClient({
 `.env` (gitignored) with `.env.example` committed:
 
 ```
-# LAN IP of the machine running `bun dev:web` (ipconfig getifaddr en0), not localhost.
-EXPO_PUBLIC_API_URL=http://192.168.1.10:3000
+# LAN IP of the machine running `bun dev:api` (ipconfig getifaddr en0), not localhost.
+EXPO_PUBLIC_API_URL=http://192.168.1.10:8787
 POSTHOG_PROJECT_TOKEN=
 POSTHOG_HOST=
 ```
@@ -295,6 +371,6 @@ Commit the generated `projectId`, `owner` and `updates.url`.
 
 ## Local dev against the Worker
 
-- `bun dev:web` serves the API on `:3000` with `host: true`, so devices on the LAN can reach it.
-- Point `EXPO_PUBLIC_API_URL` at the laptop's LAN IP. The Android emulator can use `adb reverse tcp:3000 tcp:3000` with `http://localhost:3000` (TCP only).
-- Set `APP_URL` in `.dev.vars` to the URL the browser uses, and add the Google OAuth redirect `http://localhost:3000/api/auth/callback/google`.
+- `bun dev:api` runs `wrangler dev --ip 0.0.0.0 --port 8787`, so devices on the LAN can reach it.
+- Point `EXPO_PUBLIC_API_URL` at the laptop's LAN IP. The Android emulator can use `adb reverse tcp:8787 tcp:8787` with `http://localhost:8787` (TCP only).
+- Set `APP_URL` in `apps/api/.dev.vars` to that same URL, and register the Google OAuth redirect `<APP_URL>/api/auth/callback/google`.
