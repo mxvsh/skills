@@ -27,6 +27,14 @@
       "skills": [
         "./skills/expo-supabase"
       ]
+    },
+    {
+      "name": "macos-swiftui",
+      "source": "./",
+      "description": "Native macOS SwiftUI + AppKit apps shipped outside the App Store: notarized DMG releases on GitHub Actions, generated release notes, Sparkle updates in a sandbox",
+      "skills": [
+        "./skills/macos-swiftui"
+      ]
     }
   ]
 }
